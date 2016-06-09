@@ -5,21 +5,137 @@ output:
     keep_md: true
 ---
 
+```{r setup, cache = F, echo = F, message = F, warning = F, tidy = F}
+options(xtable.type = 'html')
+```
 
 ## Loading and preprocessing the data
 
+```{r, results='hide', message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr, quietly = TRUE)
+library(lubridate, quietly = TRUE)
+library(ggplot2, quietly = TRUE)
+library(xtable)
+```
 
+```{r}
+inputzip <- "activity.zip"
+unzip(inputzip)
+inputfile <- "activity.csv"
+activitydt <- read.csv(inputfile, header = TRUE)
+```
+
+As read from the csv, it has three colums for steps, date, and interval.  The date and interval columns are really together a date and time, that we suspect we'll want.  We create a new column datetime to hold a full date-time string, and we retain the intermediate steps, giving us choices during our analysis.
+
+```{r}
+activitydt <- mutate(activitydt, 
+                     datestr = as.character(date), 
+                     intstr = sprintf("%04d", interval), 
+                     timestr = paste(substr(intstr,1,2), 
+                                                substr(intstr,3,4), 
+                                                sep=":"))
+str(activitydt)
+```
+
+We note that steps has missing values, our date and internal (and the fields we built on them) don't.
 
 ## What is mean total number of steps taken per day?
 
+Ignoring missing values in steps, we group by date and sum with summarize, to get numbers suitable for histogramming:
 
+```{r}
+summdt <- summarize(group_by(.data = activitydt, date), steps_per_day = sum(steps, na.rm = TRUE))
+qplot(summdt$steps_per_day, geom="histogram", bins=30, 
+      main="Histogram of Daily Steps Sums", xlab="Steps Bins", ylab="Count")
+```
+
+The mean and median of the steps per day are also easy with the summarized data, plucking them from the summary() function:
+
+```{r}
+summary(summdt$steps_per_day)
+```
 
 ## What is the average daily activity pattern?
 
+Again ignoring the missing values, we gain intuition about the daily pattern of steps activity with a time-series of average steps per five-minute-interval.  We actually dislike the interval value itself here, because it isn't a number of minutes into the day, or the number of five-minute intervals into the day, it is an hours and minutes crammed into a single int.  So that our time-series does not mis-represent, we choose to have the x-axis of our time-series be a single monotonically-increasing number for the intervals over the day.
 
+```{r}
+summ2dt <- summarize(group_by(.data = activitydt, interval), mean_steps = mean(steps, na.rm = TRUE))
+plot(seq(1, length(summ2dt$interval)), summ2dt$mean_steps, type="l", main="Mean Across Days of Steps by Five-Minute Interval", xlab="Index of Five-Minute Interval", ylab="Steps")
+```
+
+Somewhere just after the 100th five-minute interval of the day is the peak or maximum number of steps, and that exactly interval is:
+
+```{r}
+as.numeric(summ2dt[summ2dt$mean_steps == max(summ2dt$mean_steps), 1])
+```
+
+Or, 08:35 in the morning.
 
 ## Imputing missing values
 
+As noted, there are missing values:
 
+```{r}
+onlymissing <- activitydt[is.na(activitydt$steps),]
+summonlymissing <- summarize(group_by(.data = onlymissing, date), 
+                             missing_intervals = n())
+summonlymissing
+sum(summonlymissing$missing_intervals)
+```
+
+8 full days are missing, for a total 2304 missing steps values.
+
+We will fill in the missing steps values by substituting the mean number of steps for an interval across the rest of the dataset, re-using the summary by mean steps per interval used to make the first time-series.
+
+```{r}
+activityFull <- as.data.frame(data.table::copy(activitydt))
+class(activityFull)
+needreplace <- which(is.na(activityFull$steps))
+length(needreplace)
+for (index in needreplace) { 
+  activityFull$steps[index] = as.numeric(summ2dt[summ2dt$interval == activityFull$interval[index] , 2] )
+}
+needreplace2 <- which(is.na(activityFull$steps))
+length(needreplace2)
+```
+
+Making a histogram and reporting the mean and median as we did originally:
+
+```{r}
+summFulldt <- summarize(group_by(.data = activityFull, date), steps_per_day = sum(steps, na.rm = TRUE))
+qplot(summFulldt$steps_per_day, geom="histogram", bins=30, 
+      main="Histogram of Daily Steps Sums, with Imputed", xlab="Steps Bins", ylab="Count")
+summary(summFulldt$steps_per_day)
+```
+
+This has had the effect of moving 8 days' worth of zero-steps per day from 0 up to values of steps-per-day that are close to the mean of steps per day.  The original ignoring of summing steps per day, ignoring NA values, did still group the data frame *by the date factor*.  Even though 8 values of that factor had no step values at all, the sum() of nothing is still 0, and those 8 still show on the histogram.
+
+This suggests that some greater care in *when* in a process NA values are ignored is needed.  We ought to have expected that days with no values to report wouldn't appear in the original histogram or statistics.
 
 ## Are there differences in activity patterns between weekdays and weekends?
+
+We make a factor variable by (in a rather locale-dependent fashion) checking whether our dates are Saturday or Sunday, and setting the factor value accordingly.
+
+```{r}
+activityFull <- mutate(activityFull, 
+                       daytype = as.factor(ifelse(weekdays(ymd(activityFull$datestr)) 
+                                                  %in% c("Saturday","Sunday"),
+                                                  "weekend","weekday")))
+str(activityFull$daytype)
+```
+
+We can then make time-series by facetting on that new factor, and summarization techniques as we've already used:
+
+```{r}
+summWeek <- summarize(group_by(.data = activityFull, interval, daytype), 
+                      steps = sum(steps))
+g <- ggplot(data = summWeek,aes(x = interval, y = steps, group = daytype)) +
+  geom_line() + facet_wrap( ~ daytype, nrow = 2 )
+g
+```
+
+We see that on weekend days there's a lower amount of activity overall, with generally less absolute range of steps, and the activity doesn't start so early in the day as the weekdays.  This probably reflects more sedentary activities on the weekend days, without a large early-morning exercise event.
+
+
+
